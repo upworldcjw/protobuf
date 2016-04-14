@@ -1250,7 +1250,7 @@ class Map {
 
     size_type BucketNumber(const Key& k) const {
       // We inherit from hasher, so one-arg operator() provides a hash function.
-      size_type h = (*this)(k);
+      size_type h = (*const_cast<InnerMap*>(this))(k);
       // To help prevent people from making assumptions about the hash function,
       // we use the seed differently depending on NDEBUG.  The default hash
       // function, the seeding, etc., are all likely to change in the future.

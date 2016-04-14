@@ -489,6 +489,8 @@ string JSByteGetterSuffix(BytesMode bytes_mode) {
     default:
       assert(false);
   }
+  // Never reached.
+  return "";
 }
 
 // Returns the field name as a capitalized portion of a getter/setter method
