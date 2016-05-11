@@ -44,6 +44,9 @@
 #import "GPBUnknownFieldSet_PackagePrivate.h"
 #import "GPBUtilities_PackagePrivate.h"
 
+// Call this before using the readOnlySemaphore_. This ensures it is created only once.
+
+
 NSString *const GPBMessageErrorDomain =
     GPBNSStringifySymbol(GPBMessageErrorDomain);
 
@@ -53,18 +56,6 @@ NSString *const GPBExceptionMessageKey =
 #endif  // DEBUG
 
 static NSString *const kGPBDataCoderKey = @"GPBData";
-
-#ifndef _GPBCompileAssert
-  #if __has_feature(c_static_assert) || __has_extension(c_static_assert)
-    #define _GPBCompileAssert(test, msg) _Static_assert((test), #msg)
-  #else
-    // Pre-Xcode 7 support.
-    #define _GPBCompileAssertSymbolInner(line, msg) _GPBCompileAssert ## line ## __ ## msg
-    #define _GPBCompileAssertSymbol(line, msg) _GPBCompileAssertSymbolInner(line, msg)
-    #define _GPBCompileAssert(test, msg) \
-        typedef char _GPBCompileAssertSymbol(__LINE__, msg) [ ((test) ? 1 : -1) ]
-  #endif  // __has_feature(c_static_assert) || __has_extension(c_static_assert)
-#endif // _GPBCompileAssert
 
 //
 // PLEASE REMEMBER:
@@ -886,6 +877,9 @@ static GPBUnknownFieldSet *GetOrMakeUnknownFields(GPBMessage *self) {
 - (void)dealloc {
   [self internalClear:NO];
   NSCAssert(!autocreator_, @"Autocreator was not cleared before dealloc.");
+  if (readOnlySemaphore_) {
+    dispatch_release(readOnlySemaphore_);
+  }
   [super dealloc];
 }
 
@@ -1934,7 +1928,6 @@ static GPBUnknownFieldSet *GetOrMakeUnknownFields(GPBMessage *self) {
     }
   }
   @catch (NSException *exception) {
-    [message release];
     message = nil;
     if (errorPtr) {
       *errorPtr = MessageErrorWithReason(GPBMessageErrorCodeMalformedData,
@@ -1943,7 +1936,6 @@ static GPBUnknownFieldSet *GetOrMakeUnknownFields(GPBMessage *self) {
   }
 #ifdef DEBUG
   if (message && !message.initialized) {
-    [message release];
     message = nil;
     if (errorPtr) {
       *errorPtr = MessageError(GPBMessageErrorCodeMissingRequiredField, nil);
@@ -2619,9 +2611,13 @@ static void MergeRepeatedNotPackedFieldFromCodedInputStream(
       size_t fieldOffset = field->description_->offset;
       switch (fieldDataType) {
         case GPBDataTypeBool: {
-          BOOL *selfValPtr = (BOOL *)&selfStorage[fieldOffset];
-          BOOL *otherValPtr = (BOOL *)&otherStorage[fieldOffset];
-          if (*selfValPtr != *otherValPtr) {
+          // Bools are stored in has_bits to avoid needing explicit space in
+          // the storage structure.
+          // (the field number passed to the HasIvar helper doesn't really
+          // matter since the offset is never negative)
+          BOOL selfValue = GPBGetHasIvar(self, (int32_t)(fieldOffset), 0);
+          BOOL otherValue = GPBGetHasIvar(other, (int32_t)(fieldOffset), 0);
+          if (selfValue != otherValue) {
             return NO;
           }
           break;
@@ -2633,7 +2629,7 @@ static void MergeRepeatedNotPackedFieldFromCodedInputStream(
         case GPBDataTypeFixed32:
         case GPBDataTypeUInt32:
         case GPBDataTypeFloat: {
-          _GPBCompileAssert(sizeof(float) == sizeof(uint32_t), float_not_32_bits);
+//          _GPBCompileAssert(sizeof(float) == sizeof(uint32_t), float_not_32_bits);
           // These are all 32bit, signed/unsigned doesn't matter for equality.
           uint32_t *selfValPtr = (uint32_t *)&selfStorage[fieldOffset];
           uint32_t *otherValPtr = (uint32_t *)&otherStorage[fieldOffset];
@@ -2648,7 +2644,7 @@ static void MergeRepeatedNotPackedFieldFromCodedInputStream(
         case GPBDataTypeFixed64:
         case GPBDataTypeUInt64:
         case GPBDataTypeDouble: {
-          _GPBCompileAssert(sizeof(double) == sizeof(uint64_t), double_not_64_bits);
+//          _GPBCompileAssert(sizeof(double) == sizeof(uint64_t), double_not_64_bits);
           // These are all 64bit, signed/unsigned doesn't matter for equality.
           uint64_t *selfValPtr = (uint64_t *)&selfStorage[fieldOffset];
           uint64_t *otherValPtr = (uint64_t *)&otherStorage[fieldOffset];
@@ -2730,8 +2726,12 @@ static void MergeRepeatedNotPackedFieldFromCodedInputStream(
       size_t fieldOffset = field->description_->offset;
       switch (fieldDataType) {
         case GPBDataTypeBool: {
-          BOOL *valPtr = (BOOL *)&storage[fieldOffset];
-          result = prime * result + *valPtr;
+          // Bools are stored in has_bits to avoid needing explicit space in
+          // the storage structure.
+          // (the field number passed to the HasIvar helper doesn't really
+          // matter since the offset is never negative)
+          BOOL value = GPBGetHasIvar(self, (int32_t)(fieldOffset), 0);
+          result = prime * result + value;
           break;
         }
         case GPBDataTypeSFixed32:
@@ -2741,7 +2741,7 @@ static void MergeRepeatedNotPackedFieldFromCodedInputStream(
         case GPBDataTypeFixed32:
         case GPBDataTypeUInt32:
         case GPBDataTypeFloat: {
-          _GPBCompileAssert(sizeof(float) == sizeof(uint32_t), float_not_32_bits);
+//          _GPBCompileAssert(sizeof(float) == sizeof(uint32_t), float_not_32_bits);
           // These are all 32bit, just mix it in.
           uint32_t *valPtr = (uint32_t *)&storage[fieldOffset];
           result = prime * result + *valPtr;
@@ -2753,7 +2753,7 @@ static void MergeRepeatedNotPackedFieldFromCodedInputStream(
         case GPBDataTypeFixed64:
         case GPBDataTypeUInt64:
         case GPBDataTypeDouble: {
-          _GPBCompileAssert(sizeof(double) == sizeof(uint64_t), double_not_64_bits);
+//          _GPBCompileAssert(sizeof(double) == sizeof(uint64_t), double_not_64_bits);
           // These are all 64bit, just mix what fits into an NSUInteger in.
           uint64_t *valPtr = (uint64_t *)&storage[fieldOffset];
           result = prime * result + (NSUInteger)(*valPtr);
@@ -3095,7 +3095,7 @@ static void ResolveIvarSet(GPBFieldDescriptor *field,
       } else {
         GPBOneofDescriptor *oneof = field->containingOneof_;
         if (oneof && (sel == oneof->caseSel_)) {
-          int32_t index = oneof->oneofDescription_->index;
+          int32_t index = GPBFieldHasIndex(field);
           result.impToAdd = imp_implementationWithBlock(^(id obj) {
             return GPBGetHasOneof(obj, index);
           });
